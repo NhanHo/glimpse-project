@@ -1,13 +1,4 @@
-"""Defines the experiment object for encapsulating the results of a Glimpse
-experiment."""
-
-# Copyright (c) 2011 Mick Thomure
-# All rights reserved.
-#
-# Please see the file COPYING in this distribution for usage
-# terms.
-
-import glimpse.util.pil_fix  # must come before sklearn imports
+import glimpse.util.pil_fix # must come before sklearn imports
 
 import logging
 import numpy as np
@@ -47,8 +38,6 @@ class DirReader(object):
 
   def ReadDirs(self, dir_path):
     """Read list of sub-directories."""
-  dhsajkdhsajk
-  print "a"
     return filter(os.path.isdir, self._Read(dir_path))
 
   def ReadFiles(self, dir_path):
@@ -56,43 +45,40 @@ class DirReader(object):
     return filter(os.path.isfile, self._Read(dir_path))
 
 class Experiment(object):
-  """Container for experimental results.
 
-  For example, this object will contain the Glimpse model, the worker pool,
-  the feature vectors, and the SVM results.
-
-  """
-
-  def __init__(self, model, layer, pool):
-    """Create a new experiment.
-
-    :type model: model object
-    :param model: The Glimpse model to use for processing images.
-    :param LayerSpec layer: The layer activity to use for features vectors.
-    :type pool: pool object
-    :param pool: A serializable worker pool.
-
-    """
-    # Default arguments should be chosen in SetExperiment()
+  def __init__(self,model,corpus,classifier,pool):
     assert model != None
     assert layer != None
     assert pool != None
-    #: The Glimpse model used to compute feature vectors.
-    self.model = model
+    
+    Corpus = ExpCorpus()
+    Model = ExpModel()
+    Classifier = ExpClassifier()
     #: The worker pool used for parallelization.
     self.pool = pool
-    #: The model layer from which feature vectors are extracted.
-    self.layer = layer
-    # Initialize attributes used by an experiment
-    #: (list of str) Names of image classes.
-    self.classes = []
-    #: The built SVM classifier.
-    self.classifier = None
-    #: (str) Path to the corpus directory. May be empty if
-    #: :meth:`SetCorpusSubdirs` was used.
+
+  def Store(self, root_path):
+    """Save the experiment to disk."""
+    pool = self.pool
+    self.pool = None  # can't serialize some pools
+    util.Store(self, root_path)
+    self.pool = pool
+
+  @staticmethod
+  def Load(root_path):
+    """Load the experiment from disk.
+
+    :returns: The experiment object.
+    :rtype: Experiment
+
+    """
+    experiment = util.Load(root_path)
+    return experiment
+
+class ExpCorpus(object):
+
+  def __init__(self):
     self.corpus = None
-    #: (str) The method used to construct prototypes.
-    self.prototype_source = None
     #: (list of list of str) The set of images used for training, indexed by
     #: class and then image offset.
     self.train_images = None
@@ -107,50 +93,12 @@ class Experiment(object):
     #: (list of 2D ndarray) Feature vectors for the test images, indexed by
     #: class, image, and then feature offset.
     self.test_features = None
-    #: (dict) SVM evaluation results on the training data.
-    self.train_results = None
-    #: (dict) SVM evaluation results on the test data.
-    self.test_results = None
-    #: (bool) Flag indicating whether cross-validation was used to compute test
-    #: accuracy.
-    self.cross_validated = False
-    #: (float) Time required to build S2 prototypes, in seconds.
-    self.prototype_construction_time = None
-    #: (float) Time required to train the SVM, in seconds.
-    self.svm_train_time = None
-    #: (float) Time required to test the SVM, in seconds.
-    self.svm_test_time = None
+    #: (list of str) Names of image classes.
+    self.classes = []
+    #: (str) Path to the corpus directory. May be empty if
+    #: :meth:`SetCorpusSubdirs` was used.
     #: The file-system reader.
     self.dir_reader = DirReader(ignore_hidden = True)
-    #: (2D list of 4-tuple) Patch locations for imprinted prototypes.
-    self.prototype_imprint_locations = None
-    #: (float) Time elapsed while training and testing the SVM (in seconds).
-    self.svm_time = None
-    #: (float) Time elapsed while constructing feature vectors (in seconds).
-    self.compute_feature_time = None
-
-  def __eq__(self, other):
-    if other == None:
-      return False
-    attrs = dir(self)
-    attrs = [ a for a in attrs if not (a.startswith('_') or
-        isinstance(getattr(self, a), types.MethodType) or
-        isinstance(getattr(self, a), types.FunctionType)) ]
-    attrs = set(attrs) - set(('model', 'pool', 'dir_reader', 'classifier'))
-    for a in attrs:
-      value = getattr(self, a)
-      other_value = getattr(other, a)
-      if a in ('test_features', 'train_features', 's2_prototypes'):
-        test = util.CompareArrayLists(other_value, value)
-      elif a in ('test_results', 'train_results'):
-        test = all(other_value['predicted_labels'] == value['predicted_labels']) \
-            and all(other_value['decision_values'] == value['decision_values']) \
-            and other_value['accuracy'] == value['accuracy']
-      else:
-        test = other_value == value
-      if not test:
-        return False
-    return True
 
   def GetFeatures(self):
     """The full set of features for each class, without training/testing splits.
@@ -179,6 +127,149 @@ class Experiment(object):
       return None
     # Combine images by class, and concatenate lists.
     return map(util.UngroupLists, zip(self.train_images, self.test_images))
+    
+
+  def SetCorpus(self, corpus_dir, classes = None, balance = False):
+    """Read images from the corpus directory.
+
+    Training and testing subsets are chosen automatically.
+
+    :param str corpus_dir: Path to corpus directory.
+    :type classes: list of str
+    :param classes: Set of class names. Use this to ensure a given order to the
+       SVM classes. When applying a binary SVM, the first class is treated as
+       positive and the second class is treated as negative.
+    :param bool balance: Ensure an equal number of images from each class (by
+       random selection).
+
+    .. seealso::
+       :func:`SetTrainTestSplit`
+
+    """
+    if classes == None:
+      corpus_subdirs = self.dir_reader.ReadDirs(corpus_dir)
+    else:
+      corpus_subdirs = [ os.path.join(corpus_dir, cls) for cls in classes ]
+      # Check that sub-directory exists.
+      for subdir in corpus_subdirs:
+        if not os.path.isdir(subdir):
+          raise ValueError("Directory not found: %s" % subdir)
+    return self.SetCorpusSubdirs(corpus_subdirs, corpus_dir, classes, balance)
+
+  def SetCorpusSubdirs(self, corpus_subdirs, corpus = None, classes = None,
+      balance = False):
+    """Read images from the corpus directory.
+
+    Training and testing subsets are chosen automatically.
+
+    :param corpus_subdirs: Paths to directories for each class. Order
+       corresponds to `classes` argument, if set.
+    :type corpus_subdirs: list of str
+    :param corpus: Path to main corpus directory.
+    :type corpus: str, optional
+    :type classes: list of str, optional
+    :param classes: Set of class names. Use this to ensure a given order to the
+       SVM classes. When applying a binary SVM, the first class is treated as
+       positive and the second class is treated as negative.
+    :type balance: bool, optional
+    :param balance:  Ensure an equal number of images from each class (by random
+       selection).
+
+    .. seealso::
+       :func:`SetTrainTestSplit`
+
+    """
+    if classes == None:
+      classes = map(os.path.basename, corpus_subdirs)
+    self.classes = classes
+    self.corpus = corpus
+    self.train_test_split = 'automatic'
+    try:
+      images_per_class = map(self.dir_reader.ReadFiles, corpus_subdirs)
+    except OSError, ex:
+      sys.exit("Failed to read corpus directory: %s" % ex)
+    # Randomly reorder image lists.
+    for images in images_per_class:
+      np.random.shuffle(images)
+    if balance:
+      # Make sure each class has the same number of images.
+      num_images = map(len, images_per_class)
+      size = min(num_images)
+      if not all(n == size for n in num_images):
+        images_per_class = [ images[:size] for images in images_per_class ]
+    # Use first half of images for training, and second half for testing.
+    self.train_images = [ images[ : len(images)/2 ]
+        for images in images_per_class ]
+    self.test_images = [ images[ len(images)/2 : ]
+        for images in images_per_class ]
+
+  def SetTrainTestSplitFromDirs(self, train_dir, test_dir, classes = None):
+    """Read images from the corpus directories.
+
+    Training and testing subsets are chosen manually.
+
+    :param train_dir: Path to directory of training images.
+    :type train_dir: str
+    :param test_dir: Path to directory of testing images.
+    :type test_dir: str
+    :param classes: Class names.
+    :type classes: list of str
+
+    .. seealso::
+       :func:`SetCorpus`
+
+    """
+    try:
+      if classes == None:
+        classes = map(os.path.basename, self.dir_reader.ReadDirs(train_dir))
+      train_images = map(self.dir_reader.ReadFiles,
+          [ os.path.join(train_dir, cls) for cls in classes ])
+      test_images = map(self.dir_reader.ReadFiles,
+          [ os.path.join(test_dir, cls) for cls in classes ])
+    except OSError, ex:
+      sys.exit("Failed to read corpus directory: %s" % ex)
+    self.SetTrainTestSplit(train_images, test_images, classes)
+    self.corpus = (train_dir, test_dir)
+
+  def SetTrainTestSplit(self, train_images, test_images, classes):
+    """Manually specify the training and testing images.
+
+    :param train_images: Paths for each training image, with one sub-list per
+       class.
+    :type train_images: list of list of str
+    :param test_images: Paths for each training image, with one sub-list per
+       class.
+    :type test_images: list of list of str
+    :param classes: Class names
+    :type classes: list of str
+
+    """
+    if classes == None:
+      raise ValueError("Must specify set of classes.")
+    if train_images == None:
+      raise ValueError("Must specify set of training images.")
+    if test_images == None:
+      raise ValueError("Must specify set of testing images.")
+    self.classes = classes
+    self.train_test_split = 'manual'
+    self.train_images = train_images
+    self.test_images = test_images
+
+
+class ExpModel(object):
+
+  def __init__(self):
+    self.model = model
+    #: The model layer from which feature vectors are extracted.
+    self.layer = layer 
+    #: (str) The method used to construct prototypes.
+    self.prototype_source = None
+    #: (float) Time required to build S2 prototypes, in seconds.
+    self.prototype_construction_time = None
+    #: (2D list of 4-tuple) Patch locations for imprinted prototypes.
+    self.prototype_imprin
+    #: (float) Time elapsed while constructing feature vectors (in seconds).
+    self.compute_feature_time = None
 
   @property
   def s2_prototypes(self):
@@ -189,29 +280,6 @@ class Experiment(object):
   def s2_prototypes(self, value):
     self.prototype_source = 'manual'
     self.model.s2_kernels = value
-
-  def __str__(self):
-    values = dict(self.__dict__)
-    values['classes'] = ", ".join(values['classes'])
-    if self.train_results == None:
-      values['train_accuracy'] = None
-    else:
-      values['train_accuracy'] = self.train_results['accuracy']
-    if self.test_results == None:
-      values['test_accuracy'] = None
-    else:
-      values['test_accuracy'] = self.test_results['accuracy']
-    return """Experiment:
-  corpus: %(corpus)s
-  classes: %(classes)s
-  train_test_split: %(train_test_split)s
-  model: %(model)s
-  layer: %(layer)s
-  prototype_source: %(prototype_source)s
-  train_accuracy: %(train_accuracy)s
-  test_accuracy: %(test_accuracy)s""" % values
-
-  __repr__ = __str__
 
   def ImprintS2Prototypes(self, num_prototypes):
     """Imprint a set of S2 prototypes from the training images.
@@ -455,134 +523,8 @@ class Experiment(object):
         logging.error("Failed to process image (%s): %s", path, ex.message)
         sys.exit(-1)
     return features
-
-  def SetCorpus(self, corpus_dir, classes = None, balance = False):
-    """Read images from the corpus directory.
-
-    Training and testing subsets are chosen automatically.
-
-    :param str corpus_dir: Path to corpus directory.
-    :type classes: list of str
-    :param classes: Set of class names. Use this to ensure a given order to the
-       SVM classes. When applying a binary SVM, the first class is treated as
-       positive and the second class is treated as negative.
-    :param bool balance: Ensure an equal number of images from each class (by
-       random selection).
-
-    .. seealso::
-       :func:`SetTrainTestSplit`
-
-    """
-    if classes == None:
-      corpus_subdirs = self.dir_reader.ReadDirs(corpus_dir)
-    else:
-      corpus_subdirs = [ os.path.join(corpus_dir, cls) for cls in classes ]
-      # Check that sub-directory exists.
-      for subdir in corpus_subdirs:
-        if not os.path.isdir(subdir):
-          raise ValueError("Directory not found: %s" % subdir)
-    return self.SetCorpusSubdirs(corpus_subdirs, corpus_dir, classes, balance)
-
-  def SetCorpusSubdirs(self, corpus_subdirs, corpus = None, classes = None,
-      balance = False):
-    """Read images from the corpus directory.
-
-    Training and testing subsets are chosen automatically.
-
-    :param corpus_subdirs: Paths to directories for each class. Order
-       corresponds to `classes` argument, if set.
-    :type corpus_subdirs: list of str
-    :param corpus: Path to main corpus directory.
-    :type corpus: str, optional
-    :type classes: list of str, optional
-    :param classes: Set of class names. Use this to ensure a given order to the
-       SVM classes. When applying a binary SVM, the first class is treated as
-       positive and the second class is treated as negative.
-    :type balance: bool, optional
-    :param balance:  Ensure an equal number of images from each class (by random
-       selection).
-
-    .. seealso::
-       :func:`SetTrainTestSplit`
-
-    """
-    if classes == None:
-      classes = map(os.path.basename, corpus_subdirs)
-    self.classes = classes
-    self.corpus = corpus
-    self.train_test_split = 'automatic'
-    try:
-      images_per_class = map(self.dir_reader.ReadFiles, corpus_subdirs)
-    except OSError, ex:
-      sys.exit("Failed to read corpus directory: %s" % ex)
-    # Randomly reorder image lists.
-    for images in images_per_class:
-      np.random.shuffle(images)
-    if balance:
-      # Make sure each class has the same number of images.
-      num_images = map(len, images_per_class)
-      size = min(num_images)
-      if not all(n == size for n in num_images):
-        images_per_class = [ images[:size] for images in images_per_class ]
-    # Use first half of images for training, and second half for testing.
-    self.train_images = [ images[ : len(images)/2 ]
-        for images in images_per_class ]
-    self.test_images = [ images[ len(images)/2 : ]
-        for images in images_per_class ]
-
-  def SetTrainTestSplitFromDirs(self, train_dir, test_dir, classes = None):
-    """Read images from the corpus directories.
-
-    Training and testing subsets are chosen manually.
-
-    :param train_dir: Path to directory of training images.
-    :type train_dir: str
-    :param test_dir: Path to directory of testing images.
-    :type test_dir: str
-    :param classes: Class names.
-    :type classes: list of str
-
-    .. seealso::
-       :func:`SetCorpus`
-
-    """
-    try:
-      if classes == None:
-        classes = map(os.path.basename, self.dir_reader.ReadDirs(train_dir))
-      train_images = map(self.dir_reader.ReadFiles,
-          [ os.path.join(train_dir, cls) for cls in classes ])
-      test_images = map(self.dir_reader.ReadFiles,
-          [ os.path.join(test_dir, cls) for cls in classes ])
-    except OSError, ex:
-      sys.exit("Failed to read corpus directory: %s" % ex)
-    self.SetTrainTestSplit(train_images, test_images, classes)
-    self.corpus = (train_dir, test_dir)
-
-  def SetTrainTestSplit(self, train_images, test_images, classes):
-    """Manually specify the training and testing images.
-
-    :param train_images: Paths for each training image, with one sub-list per
-       class.
-    :type train_images: list of list of str
-    :param test_images: Paths for each training image, with one sub-list per
-       class.
-    :type test_images: list of list of str
-    :param classes: Class names
-    :type classes: list of str
-
-    """
-    if classes == None:
-      raise ValueError("Must specify set of classes.")
-    if train_images == None:
-      raise ValueError("Must specify set of training images.")
-    if test_images == None:
-      raise ValueError("Must specify set of testing images.")
-    self.classes = classes
-    self.train_test_split = 'manual'
-    self.train_images = train_images
-    self.test_images = test_images
-
-  def ComputeFeatures(self, raw = False):
+  
+  def ComputeFeatures(self):
     """Compute SVM feature vectors for all images.
 
     Generally, you do not need to call this method yourself, as it will be
@@ -600,21 +542,39 @@ class Experiment(object):
     images = train_images + test_images
     start_time = time.time()
     # Compute features for all images.
-    features = self.GetImageFeatures(images, block = True, raw = raw)
+    features = self.GetImageFeatures(images, block = True)
     self.compute_feature_time = time.time() - start_time
     # Split results by training/testing set
     train_features, test_features = util.SplitList(features,
         [train_size, test_size])
     # Split training set by class
-    self.train_features = util.SplitList(train_features, train_sizes)
+    train_features = util.SplitList(train_features, train_sizes)
     # Split testing set by class
-    self.test_features = util.SplitList(test_features, test_sizes)
-    if not raw:
-      # Store features as list of 2D arrays
-      self.train_features = [ np.array(f, util.ACTIVATION_DTYPE)
-          for f in self.train_features ]
-      self.test_features = [ np.array(f, util.ACTIVATION_DTYPE)
-          for f in self.test_features ]
+    test_features = util.SplitList(test_features, test_sizes)
+    # Store features as list of 2D arrays
+    self.train_features = [ np.array(f, util.ACTIVATION_DTYPE)
+        for f in train_features ]
+    self.test_features = [ np.array(f, util.ACTIVATION_DTYPE)
+        for f in test_features ]
+
+class ExpClassifier(object):
+  
+  def __init__(self):
+    #: (dict) SVM evaluation results on the training data.
+    self.train_results = None
+    #: (dict) SVM evaluation results on the test data.
+    self.test_results = None
+    #: (bool) Flag indicating whether cross-validation was used to compute test
+    #: accuracy.
+    self.cross_validated = False
+    #: (float) Time required to train the SVM, in seconds.
+    self.svm_train_time = None
+    #: (float) Time required to test the SVM, in seconds.
+    self.svm_test_time = None
+    #: (float) Time elapsed while training and testing the SVM (in seconds).
+    self.svm_time = None
+    #: The built SVM classifier.
+    self.classifier = None
 
   def TrainSvm(self):
     """Construct an SVM classifier from the set of training images.
@@ -710,22 +670,4 @@ class Experiment(object):
       train_accuracy = self.train_results['accuracy']
     self.svm_time = time.time() - start_time
     return train_accuracy, self.test_results['accuracy']
-
-  def Store(self, root_path):
-    """Save the experiment to disk."""
-    pool = self.pool
-    self.pool = None  # can't serialize some pools
-    util.Store(self, root_path)
-    self.pool = pool
-
-  @staticmethod
-  def Load(root_path):
-    """Load the experiment from disk.
-
-    :returns: The experiment object.
-    :rtype: Experiment
-
-    """
-    experiment = util.Load(root_path)
-    return experiment
-
+    
