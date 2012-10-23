@@ -11,6 +11,7 @@ import sklearn.svm
 import sys
 import time
 import types
+import copy
 
 from glimpse.models import misc
 from glimpse import util
@@ -18,31 +19,7 @@ from glimpse.util.grandom import HistogramSampler
 from glimpse.util import svm
 from glimpse.models.misc import InputSourceLoadException
 from glimpse.backends import BackendException, InsufficientSizeException
-
-class DirReader(object):
-  """Read directory contents."""
-
-  def __init__(self, ignore_hidden = True):
-    self.ignore_hidden = ignore_hidden
-
-  @staticmethod
-  def _HiddenPathFilter(path):
-    # Ignore "hidden" entries in directory.
-    return not path.startswith('.')
-
-  def _Read(self, dir_path):
-    entries = os.listdir(dir_path)
-    if self.ignore_hidden:
-      entries = filter(DirReader._HiddenPathFilter, entries)
-    return [ os.path.join(dir_path, entry) for entry in entries ]
-
-  def ReadDirs(self, dir_path):
-    """Read list of sub-directories."""
-    return filter(os.path.isdir, self._Read(dir_path))
-
-  def ReadFiles(self, dir_path):
-    """Read list of files."""
-    return filter(os.path.isfile, self._Read(dir_path))
+import misc as pmisc
 
 class Experiment(object):
 
@@ -77,28 +54,21 @@ class Experiment(object):
 
 class ExpCorpus(object):
 
-  def __init__(self):
-    self.corpus = None
-    #: (list of list of str) The set of images used for training, indexed by
-    #: class and then image offset.
-    self.train_images = None
-    #: (list of list of str) The set of images used for testing, indexed by
-    #: class and then image offset.
-    self.test_images = None
-    #: (str) The method used to split the data into training and testing sets.
-    self.train_test_split = None
-    #: (list of 2D ndarray) Feature vectors for the training images, indexed by
-    #: class, image, and then feature offset.
-    self.train_features = None
-    #: (list of 2D ndarray) Feature vectors for the test images, indexed by
-    #: class, image, and then feature offset.
-    self.test_features = None
-    #: (list of str) Names of image classes.
-    self.classes = []
+  def __init__(self, corpus_dir = None, images = None):
+    #: (str): path to corpus directory
+    self.corpus_dir = corpus_dir
+    #: (list of list of ...) The set of data of this corpus, the data could be
+    #raw image, or a feature layer
+    self.dir_reader = pmisc.DirReader(ignore_hidden = True)    
+    self.images = images
+    self.classes = []    
+    self.features = []
+    if images == None:
+      self.SetCorpus(corpus_dir)
+    #: (str): Name of classes
     #: (str) Path to the corpus directory. May be empty if
     #: :meth:`SetCorpusSubdirs` was used.
     #: The file-system reader.
-    self.dir_reader = DirReader(ignore_hidden = True)
 
   def GetFeatures(self):
     """The full set of features for each class, without training/testing splits.
@@ -255,19 +225,32 @@ class ExpCorpus(object):
     self.train_images = train_images
     self.test_images = test_images
 
+  def SetFeatures(self, train_features, test_features):
+    self.train_features = train_features
+    self.test_features = test_features
+
+  def GetFeatures(self):
+    return self.features
 
 class ExpModel(object):
 
-  def __init__(self):
+  def __init__(self, model = None, layer = None, pool = None, prototype_source = None):
+    DefaultModel = pmisc.MakeModel(model, layer, pool, prototype_source)
+    model = DefaultModel[0]
+    layer = DefaultModel[1]
+    pool = DefaultModel[2]
+
     self.model = model
     #: The model layer from which feature vectors are extracted.
     self.layer = layer 
+    #The worker pool which the model will use
+    self.pool = pool
     #: (str) The method used to construct prototypes.
     self.prototype_source = None
     #: (float) Time required to build S2 prototypes, in seconds.
     self.prototype_construction_time = None
     #: (2D list of 4-tuple) Patch locations for imprinted prototypes.
-    self.prototype_imprin
+    self.prototype_imprint_locations = None
     #: (float) Time elapsed while constructing feature vectors (in seconds).
     self.compute_feature_time = None
 
@@ -281,20 +264,17 @@ class ExpModel(object):
     self.prototype_source = 'manual'
     self.model.s2_kernels = value
 
-  def ImprintS2Prototypes(self, num_prototypes):
-    """Imprint a set of S2 prototypes from the training images.
+  def ImprintS2Prototypes(self, corpus, num_prototypes):
+    """Imprint a set of S2 prototypes from a corpus.
 
     Patches are drawn from all classes of the training data.
 
     :param int num_prototypes: The number of C1 patches to sample.
 
     """
-    if self.train_images == None:
-      sys.exit("Please specify the training corpus before imprinting "
-          "prototypes.")
     model = self.model
     start_time = time.time()
-    image_files = util.UngroupLists(self.train_images)
+    image_files = util.UngroupLists(corpus.images)
     # Represent each image file as an empty model state.
     input_states = map(model.MakeStateFromFilename, image_files)
     try:
@@ -557,6 +537,27 @@ class ExpModel(object):
     self.test_features = [ np.array(f, util.ACTIVATION_DTYPE)
         for f in test_features ]
 
+  
+  def ComputeFeatures(self, corpus):
+    """Compute SVM feature vectors for all images.
+
+    Generally, you do not need to call this method yourself, as it will be
+    called automatically by :meth:`RunSvm`.
+
+    """
+    if corpus.images == None:
+      sys.exit("Please specify the corpus.")
+    image_sizes = map(len, corpus.images)
+    image_size = sum(image_sizes)
+    images = util.UngroupLists(corpus.images)
+    start_time = time.time()
+    features = self.GetImageFeatures(images, block = True)
+    self.compute_feature_time = time.time() - start_time
+    features = util.SplitList(features, image_sizes)
+    features = [np.array(f,util.ACTIVATION_DTYPE) for f in features]
+    corpus.features = features
+    return features
+    
 class ExpClassifier(object):
   
   def __init__(self):
@@ -576,15 +577,14 @@ class ExpClassifier(object):
     #: The built SVM classifier.
     self.classifier = None
 
-  def TrainSvm(self):
+  def TrainSvm(self, corpus):
     """Construct an SVM classifier from the set of training images.
 
     :returns: Training accuracy.
     :rtype: float
 
     """
-    if self.train_features == None:
-      self.ComputeFeatures()
+    self.train_features = corpus.GetFeatures()
     # Prepare the data
     train_features, train_labels = svm.PrepareFeatures(self.train_features)
     # Create the SVM classifier with feature scaling.
@@ -601,7 +601,7 @@ class ExpClassifier(object):
         predicted_labels = predicted_labels, accuracy = accuracy, auc = auc)
     return self.train_results['accuracy']
 
-  def TestSvm(self):
+  def TestSvm(self, corpus):
     """Test a learned SVM classifier.
 
     The classifier is applied to the set of test images.
@@ -611,7 +611,7 @@ class ExpClassifier(object):
 
     """
     # Prepare the data
-    test_features, test_labels = svm.PrepareFeatures(self.test_features)
+    test_features, test_labels = svm.PrepareFeatures(corpus.GetFeatures())
     # Evaluate the classifier
     decision_values = self.classifier.decision_function(test_features)
     predicted_labels = self.classifier.predict(test_features)

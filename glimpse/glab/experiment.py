@@ -47,8 +47,6 @@ class DirReader(object):
 
   def ReadDirs(self, dir_path):
     """Read list of sub-directories."""
-  dhsajkdhsajk
-  print "a"
     return filter(os.path.isdir, self._Read(dir_path))
 
   def ReadFiles(self, dir_path):

@@ -11,7 +11,7 @@ import os
 from glimpse import pools
 from glimpse import util
 from .misc import *
-
+from .experiment import *
 def _InitCli(pool_type = None, cluster_config = None, model_name = None,
     params = None, edit_params = False, layer = None, verbose = 0, **opts):
   if verbose > 0:
