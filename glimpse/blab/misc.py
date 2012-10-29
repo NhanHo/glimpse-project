@@ -17,6 +17,12 @@ __LAYER = None
 __EXP = None
 __VERBOSE = False
 
+def ConcatStringList(strList):
+	result = ''
+	for x in strList:
+		result += x
+	return result
+	
 def SetPool(pool):
   """Set the worker pool used for this experiment."""
   global __POOL
@@ -119,24 +125,6 @@ def GetLayer():
   """
   return SetLayer()
 
-def MakeModel1(model_class = None, params = None, pool = None, layer = None):
-  """Create a Glimpse model.
-
-  .. seealso::
-     :func:`SetModelClass`
-
-  """
-  if params == None:
-    params = GetParams()
-  if model_class == None:
-    model_class = SetModelClass()
-  if pool == None:
-    pool = GetPool()
-  if layer == None:
-    layer = GetLayer()
-  model = model_class(backends.MakeBackend(), params)
-  
-  return ExpModel(model, layer, pool)
 
 def GetExperiment():
   """Get the current experiment object.
@@ -174,13 +162,16 @@ def SetExperiment(model = None, layer = None):
   __EXP = Experiment(model, layer, pool = GetPool())
   return __EXP
 
-def MakeModel(model = None, layer = None, pool = None, prototype_source = None):
+def MakeModel(model = None, layer = None, pool = None, params = None, prototype_source = None):
   model_class = glimpse.models.GetModelClass()
-
-  params = model_class.ParamClass()
-  model = model_class(backends.MakeBackend(), params)
-  layer = SetLayer(layer)
-  pool = GetPool()
+  if params == None:
+    params = model_class.ParamClass()
+  if model == None:
+    model = model_class(backends.MakeBackend(), params)
+  if layer == None:
+    layer = SetLayer(layer)
+  if pool == None:
+    pool = GetPool()
   return model, layer, pool
 
 def MakeDefaultLayer(layer = None):
@@ -231,7 +222,7 @@ def SetCorpusSubdirs(corpus_subdirs, corpus = None, classes = None,
       for images in images_per_class ]
   test_images = [ images[ len(images)/2 : ]
       for images in images_per_class ]
-  return ExpCorpus(corpus, train_images), ExpCorpus(corpus, test_images)
+  return ExpCorpus(corpus, train_images, classes), ExpCorpus(corpus, test_images, classes)
 
 class DirReader(object):
   """Read directory contents."""
@@ -311,6 +302,8 @@ def SetCorpus(corpus_dir, classes = None, balance = False):
     for subdir in corpus_subdirs:
       if not os.path.isdir(subdir):
         raise ValueError("Directory not found: %s" % subdir)
-  return SetCorpusSubdirs(corpus_subdirs, corpus_dir, classes, balance)
-
+  train, test = SetCorpusSubdirs(corpus_subdirs, corpus_dir, classes, balance)
+  train.name = corpus_dir + "Train"
+  test.name = corpus_dir + "Test"
+  return train, test
 

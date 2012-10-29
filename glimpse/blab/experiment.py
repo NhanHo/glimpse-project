@@ -19,6 +19,8 @@ from glimpse.util.grandom import HistogramSampler
 from glimpse.util import svm
 from glimpse.models.misc import InputSourceLoadException
 from glimpse.backends import BackendException, InsufficientSizeException
+from traits.api import  Str, Int, List, Button, HasTraits
+from traitsui.api import View, Item, CheckListEditor, Group, Handler, Action, TextEditor
 import misc as pmisc
 
 class Experiment(object):
@@ -52,24 +54,32 @@ class Experiment(object):
     experiment = util.Load(root_path)
     return experiment
 
-class ExpCorpus(object):
+class ExpCorpus(HasTraits):
+  def __repr__(self):
+    return self.name
 
-  def __init__(self, corpus_dir = None, images = None):
+  def __init__(self, corpus_dir = None, images = None, classes = None, name = None):
+    print "Corpus object initialization"
     #: (str): path to corpus directory
     self.corpus_dir = corpus_dir
     #: (list of list of ...) The set of data of this corpus, the data could be
     #raw image, or a feature layer
     self.dir_reader = pmisc.DirReader(ignore_hidden = True)    
     self.images = images
-    self.classes = []    
-    self.features = []
+    self.classes = classes 
+    self.name = name
+   
+    self.features = None
     if images == None:
+      print "flag"
+      print os.getcwd()
+      print corpus_dir
       self.SetCorpus(corpus_dir)
     #: (str): Name of classes
     #: (str) Path to the corpus directory. May be empty if
     #: :meth:`SetCorpusSubdirs` was used.
     #: The file-system reader.
-
+    self.view = View (Item('name'),title = 'Model')
   def GetFeatures(self):
     """The full set of features for each class, without training/testing splits.
 
@@ -232,14 +242,31 @@ class ExpCorpus(object):
   def GetFeatures(self):
     return self.features
 
-class ExpModel(object):
+class ExpModel(HasTraits):
+  
+  #To avoid layer_str_changed being triggered every keystroke
+  layer_str = Str("C2",editor = TextEditor(auto_set = False))
+  EditParamsButton = Button ('Edit Params')
+  traits_view = View (Item('name'),
+                      Item('layer_str'), 
+                      buttons = ['OK'], kind = 'modal')
+  def _layer_str_changed(self):
+    temp = str(self.layer_str)
+    layer = pmisc.MakeDefaultLayer(temp)
+    self.layer = layer
+    
+  def __str__ (self):
+    return self.name
 
-  def __init__(self, model = None, layer = None, pool = None, prototype_source = None):
-    DefaultModel = pmisc.MakeModel(model, layer, pool, prototype_source)
+  def __repr__ (self):
+    return self.name
+    
+  def __init__(self, model = None, layer = None, pool = None, params = None, prototype_source = None, name = "Model"):
+    DefaultModel = pmisc.MakeModel(model, layer, pool, params, prototype_source)
     model = DefaultModel[0]
     layer = DefaultModel[1]
     pool = DefaultModel[2]
-
+    self.name = name
     self.model = model
     #: The model layer from which feature vectors are extracted.
     self.layer = layer 
@@ -304,12 +331,14 @@ class ExpModel(object):
     model.s2_kernels = prototypes
     self.prototype_construction_time = time.time() - start_time
 
-  def MakeUniformRandomS2Prototypes(self, num_prototypes, low = None,
+  def MakeUniformRandomS2Prototypes(self, corpus, num_prototypes, low = None,
       high = None):
     """Create a set of S2 prototypes with uniformly random entries.
 
     :param int num_prototypes: The number of S2 prototype arrays to create.
 
+    The function does not use any corpus for Prototypes, the parameter is put there for consistency 
+    with other functions' interface
     """
     if low == None:
       low = 0
@@ -329,7 +358,7 @@ class ExpModel(object):
     self.prototype_construction_time = time.time() - start_time
     self.prototype_source = 'uniform'
 
-  def MakeShuffledRandomS2Prototypes(self, num_prototypes):
+  def MakeShuffledRandomS2Prototypes(self, corpus, num_prototypes):
     """Create a set of S2 prototypes.
 
     The set is chosen by imprinting, and then shuffling the order of entries
@@ -347,7 +376,7 @@ class ExpModel(object):
     self.prototype_construction_time = time.time() - start_time
     self.prototype_source = 'shuffle'
 
-  def MakeHistogramRandomS2Prototypes(self, num_prototypes):
+  def MakeHistogramRandomS2Prototypes(self, corpus, num_prototypes):
     """Create a set of S2 prototypes.
 
     The set is created by drawing elements from a distribution, which is
@@ -367,7 +396,7 @@ class ExpModel(object):
     num_desired_c1_samples = 100000
     num_imprinted_prototypes = int(num_desired_c1_samples /
         float(c1_samples_per_prototype))
-    self.ImprintS2Prototypes(num_prototypes = num_imprinted_prototypes)
+    self.ImprintS2Prototypes(corpus, num_prototypes = num_imprinted_prototypes)
     # For each kernel size, build a histogram and sample new prototypes from it.
     prototypes = []
     for idx in range(len(model.s2_kernel_shapes)):
@@ -384,7 +413,7 @@ class ExpModel(object):
     self.prototype_construction_time = time.time() - start_time
     self.prototype_source = 'histogram'
 
-  def MakeNormalRandomS2Prototypes(self, num_prototypes):
+  def MakeNormalRandomS2Prototypes(self, corpus, num_prototypes):
     """Create a set of S2 prototypes.
 
     The set is created by drawing elements from the normal distribution, whose
@@ -404,7 +433,7 @@ class ExpModel(object):
     num_desired_c1_samples = 100000
     num_imprinted_prototypes = int(num_desired_c1_samples /
         float(c1_samples_per_prototype))
-    self.ImprintS2Prototypes(num_prototypes = num_imprinted_prototypes)
+    self.ImprintS2Prototypes(corpus, num_prototypes = num_imprinted_prototypes)
     # For each kernel size, estimate parameters of a normal distribution and
     # sample from it.
     prototypes = []
@@ -558,9 +587,12 @@ class ExpModel(object):
     corpus.features = features
     return features
     
-class ExpClassifier(object):
-  
-  def __init__(self):
+class ExpClassifier(HasTraits):
+  def __repr__(self):
+    return self.name
+
+  def __init__(self, name = "Classifier"):
+    self.name = name
     #: (dict) SVM evaluation results on the training data.
     self.train_results = None
     #: (dict) SVM evaluation results on the test data.
